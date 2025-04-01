@@ -1,42 +1,59 @@
-const github_repo = typeof(GITHUB_REPO)!="undefined" ? GITHUB_REPO
-    : 'AoEiuV020/Url-Shorten-Worker'
-const github_version = typeof(GITHUB_VERSION)!="undefined" ? GITHUB_VERSION
-    : '@main'
-const password = typeof(PASSWORD)!="undefined" ? PASSWORD
-    : 'AoEiuV020 yes'
-const shorten_timeout = typeof(SHORTEN_TIMEOUT)!="undefined" ? SHORTEN_TIMEOUT.split("*").reduce((a,b)=>parseInt(a)*parseInt(b),1)
-    : (1000 * 60 * 10)
-const default_len = typeof(DEFAULT_LEN)!="undefined" ? parseInt(DEFAULT_LEN)
-    : 6
-const demo_mode = typeof(DEMO_MODE)!="undefined" ? DEMO_MODE === 'true'
-    : true
-const remove_completely = typeof(REMOVE_COMPLETELY)!="undefined" ? REMOVE_COMPLETELY === 'true'
-    : true
-const white_list = JSON.parse(typeof(WHITE_LIST)!="undefined" ? WHITE_LIST
-    : `[
-"newnight.tw"
-    ]`)
-const demo_notice = typeof(DEMO_NOTICE)!="undefined" ? DEMO_NOTICE
-    :
+const config = {
+no_ref: "off",
+theme:"RaccoonCommunity/short-url-template",
+cors: "on",
+unique_link:true,
+custom_link:false,
+safe_browsing_api_key: ""
+}
+
 const html404 = `<!DOCTYPE html>
 <body>
-  <h1>404 找不到頁面｜狸貓社群工作室 短網址服務</h1>
-  <p>The url you visit is not found.</p>
+  <h1>404 找不到頁面</h1>
+  <p>找不要您所需要的頁面，請重新確認！</p>
+  <a href="https://newnight.tw" target="_self">點我前往狸貓社群官網</a>
 </body>`
 
+let response_header={
+  "content-type": "text/html;charset=UTF-8",
+} 
+
+if (config.cors=="on"){
+  response_header={
+  "content-type": "text/html;charset=UTF-8",
+  "Access-Control-Allow-Origin":"*",
+  "Access-Control-Allow-Methods": "POST",
+  }
+}
 
 async function randomString(len) {
-  　　let $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678';    /****默认去掉了容易混淆的字符oOLl,9gq,Vv,Uu,I1****/
-  　　let maxPos = $chars.length;
+　　len = len || 6;
+　　let $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678';    /****默认去掉了容易混淆的字符oOLl,9gq,Vv,Uu,I1****/
+　　let maxPos = $chars.length;
 　　let result = '';
 　　for (i = 0; i < len; i++) {
 　　　　result += $chars.charAt(Math.floor(Math.random() * maxPos));
 　　}
 　　return result;
 }
-async function checkURL(url){
-    let str=url;
-    let Expression=/^http(s)?:\/\/(.*@)?([\w-]+\.)*[\w-]+([_\-.,~!*:#()\w\/?%&=]*)?$/;
+
+async function sha512(url){
+    url = new TextEncoder().encode(url)
+
+    const url_digest = await crypto.subtle.digest(
+      {
+        name: "SHA-512",
+      },
+      url, // The data you want to hash as an ArrayBuffer
+    )
+    const hashArray = Array.from(new Uint8Array(url_digest)); // convert buffer to byte array
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    //console.log(hashHex)
+    return hashHex
+}
+async function checkURL(URL){
+    let str=URL;
+    let Expression=/http(s)?:\/\/([\w-]+\.)+[\w-]+(\/[\w- .\/?%&=]*)?/;
     let objExp=new RegExp(Expression);
     if(objExp.test(str)==true){
       if (str[0] == 'h')
@@ -47,143 +64,144 @@ async function checkURL(url){
         return false;
     }
 } 
-async function checkWhite(host){
-    return white_list.some((h) => host == h || host.endsWith('.'+h))
-} 
-async function md5(message) {
+async function save_url(URL){
+    let random_key=await randomString()
+    let is_exist=await LINKS.get(random_key)
+    console.log(is_exist)
+    if (is_exist == null)
+        return await LINKS.put(random_key, URL),random_key
+    else
+        save_url(URL)
+}
+async function is_url_exist(url_sha512){
+  let is_exist = await LINKS.get(url_sha512)
+  console.log(is_exist)
+  if (is_exist == null) {
+    return false
+  }else{
+    return is_exist
+  }
+}
+async function is_url_safe(url){
 
-  return hashHex
-}
-async function checkHash(url, hash) {
-    if (!hash) {
-        return false
-    }
-    return (await md5(url+password)) == hash
-}
-async function save_url(url, key, admin, len) {
-　　len = len || default_len;
-    const override = admin && key
-    if (!override) {
-        key = await randomString(len)
-    }
-    const is_exists = await load_url(key)
-    console.log("key exists " + key + " " + is_exists)
-    if (override || !is_exists) {
-        var mode = 3
-        if (admin) {
-            mode = 0
-        }
-        let value = `${mode};${Date.now()};${url}`
-        if (remove_completely && mode != 0 && !await checkWhite(new URL(url).host)) {
-          let ttl = Math.max(60, shorten_timeout / 1000)
-          console.log("key auto remove: " + key + ", " + ttl + "s")
-          return await LINKS.put(key, value, {expirationTtl: ttl}),key
-        } else {
-          return await LINKS.put(key, value),key
-        }
-    } else {
-        return await save_url(url, key, admin, len + 1)
-    }
-}
-async function load_url(key) {
-    const value = await LINKS.get(key)
-    if (!value) {
-        return null
-    }
-    const list = value.split(';')
-    console.log("value split " + list)
-    var url
-    if (list.length == 1) {
-        url = list[0]
-    } else {
-        url = list[2]
-        const mode = parseInt(list[0])
-        const create_time = parseInt(list[1])
-        if (mode != 0 && shorten_timeout > 0
-            && Date.now() - create_time > shorten_timeout) {
-            const host = new URL(url).host
-            if (await checkWhite(host)) {
-                console.log('white list')
-            } else {
-                console.log("shorten timeout")
-                return null
-            }
-        }
-    }
-    return url
+  let raw = JSON.stringify({"client":{"clientId":"Url-Shorten-Worker","clientVersion":"1.0.7"},"threatInfo":{"threatTypes":["MALWARE","SOCIAL_ENGINEERING","POTENTIALLY_HARMFUL_APPLICATION","UNWANTED_SOFTWARE"],"platformTypes":["ANY_PLATFORM"],"threatEntryTypes":["URL"],"threatEntries":[{"url":url}]}});
+
+  let requestOptions = {
+    method: 'POST',
+    body: raw,
+    redirect: 'follow'
+  };
+
+  result = await fetch("https://safebrowsing.googleapis.com/v4/threatMatches:find?key="+config.safe_browsing_api_key, requestOptions)
+  result = await result.json()
+  console.log(result)
+  if (Object.keys(result).length === 0){
+    return true
+  }else{
+    return false
+  }
 }
 async function handleRequest(request) {
   console.log(request)
   if (request.method === "POST") {
     let req=await request.json()
-    console.log("url " + req["url"])
-    let admin = await checkHash(req["url"], req["hash"])
-    console.log("admin " + admin)
-    if(!await checkURL(req["url"]) || (!admin && !demo_mode && !await checkWhite(new URL(req["url"]).host))){
+    console.log(req["url"])
+    if(!await checkURL(req["url"])){
     return new Response(`{"status":500,"key":": Error: Url illegal."}`, {
-      headers: {
-      "content-type": "text/html;charset=UTF-8",
-      "Access-Control-Allow-Origin":"*",
-      "Access-Control-Allow-Methods": "POST",
-      },
+      headers: response_header,
     })}
-    let stat,random_key=await save_url(req["url"], req["key"], admin)
-    console.log("stat " + stat)
+    let stat,random_key
+    if (config.unique_link){
+      let url_sha512 = await sha512(req["url"])
+      let url_key = await is_url_exist(url_sha512)
+      if(url_key){
+        random_key = url_key
+      }else{
+        stat,random_key=await save_url(req["url"])
+        if (typeof(stat) == "undefined"){
+          console.log(await LINKS.put(url_sha512,random_key))
+        }
+      }
+    }else{
+      stat,random_key=await save_url(req["url"])
+    }
+    console.log(stat)
     if (typeof(stat) == "undefined"){
       return new Response(`{"status":200,"key":"/`+random_key+`"}`, {
-      headers: {
-      "content-type": "text/html;charset=UTF-8",
-      "Access-Control-Allow-Origin":"*",
-      "Access-Control-Allow-Methods": "POST",
-      },
+      headers: response_header,
     })
     }else{
       return new Response(`{"status":200,"key":": Error:Reach the KV write limitation."}`, {
-      headers: {
-      "content-type": "text/html;charset=UTF-8",
-      "Access-Control-Allow-Origin":"*",
-      "Access-Control-Allow-Methods": "POST",
-      },
+      headers: response_header,
     })}
   }else if(request.method === "OPTIONS"){  
       return new Response(``, {
-      headers: {
-      "content-type": "text/html;charset=UTF-8",
-      "Access-Control-Allow-Origin":"*",
-      "Access-Control-Allow-Methods": "POST",
-      },
+      headers: response_header,
     })
 
   }
 
   const requestURL = new URL(request.url)
   const path = requestURL.pathname.split("/")[1]
+  const params = requestURL.search;
+
   console.log(path)
   if(!path){
 
-    const html= await fetch(`https://cdn.jsdelivr.net/gh/${github_repo}${github_version}/index.html`)
-    const text = (await html.text())
-        .replaceAll("###GITHUB_REPO###", github_repo)
-        .replaceAll("###GITHUB_VERSION###", github_version)
-        .replaceAll("###DEMO_NOTICE###", demo_notice)
+    const html= await fetch("https://xytom.github.io/Url-Shorten-Worker/"+config.theme+"/index.html")
     
-    return new Response(text, {
+    return new Response(await html.text(), {
     headers: {
       "content-type": "text/html;charset=UTF-8",
     },
   })
   }
-  const url = await load_url(path)
-  if (!url) {
-    console.log('not found')
-    return new Response(html404, {
+
+  const value = await LINKS.get(path);
+  let location ;
+
+  if(params) {
+    location = value + params
+  } else {
+      location = value
+  }
+  console.log(value)
+  
+
+  if (location) {
+    if (config.safe_browsing_api_key){
+      if(!(await is_url_safe(location))){
+        let warning_page = await fetch("https://xytom.github.io/Url-Shorten-Worker/safe-browsing.html")
+        warning_page =await warning_page.text()
+        warning_page = warning_page.replace(/{Replace}/gm, location)
+        return new Response(warning_page, {
+          headers: {
+            "content-type": "text/html;charset=UTF-8",
+          },
+        })
+      }
+    }
+    if (config.no_ref=="on"){
+      let no_ref= await fetch("https://xytom.github.io/Url-Shorten-Worker/no-ref.html")
+      no_ref=await no_ref.text()
+      no_ref=no_ref.replace(/{Replace}/gm, location)
+      return new Response(no_ref, {
       headers: {
         "content-type": "text/html;charset=UTF-8",
       },
-      status: 404
     })
+    }else{
+      return Response.redirect(location, 302)
+    }
+    
   }
-  return Response.redirect(url, 302)
+  // If request not in kv, return 404
+  return new Response(html404, {
+    headers: {
+      "content-type": "text/html;charset=UTF-8",
+    },
+    status: 404
+  })
 }
 
 
